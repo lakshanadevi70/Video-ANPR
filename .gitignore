@@ -13,3 +13,5 @@ venv/
 outputs/plate_crops/
 outputs/enhanced_plates/
 outputs/*.mp4
+__pycache__/
+*.py[cod]
