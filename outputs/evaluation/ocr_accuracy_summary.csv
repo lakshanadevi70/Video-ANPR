@@ -1,0 +1,4 @@
+Method,Matched Observations,Correct Plates,Exact Match Accuracy (%),Character Accuracy (%)
+Original OCR,18,2,11.11,83.33
+Enhanced OCR,18,5,27.78,80.56
+Multi-frame Voting,18,8,44.44,87.22

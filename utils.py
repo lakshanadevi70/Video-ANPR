@@ -1,114 +1,141 @@
-import string
+
+import re
+
 import easyocr
-import PIL
-
-PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
-
-reader = easyocr.Reader(['en'], gpu=False)
-
-# dictionaries for character conversion ambiguities?
-dict_char_to_int = {'O': '0',
-                    'I': '1',
-                    'J': '3',
-                    'A': '4',
-                    'G': '6',
-                    'S': '5'}
-
-dict_int_to_char = {'0': 'O',
-                    '1': 'I',
-                    '3': 'J',
-                    '4': 'A',
-                    '6': 'G',
-                    '5': 'S'}
 
 
-def write_csv(results, output_path):
-    with open(output_path, 'w') as f:
-        f.write('{}, {}, {}, {}, {}, {}, {}\n'.format('frame_nmb', 'car_id', 'car_bbox',
-                                                      'plate_bbox', 'plate_bbox_score', 'license_nmb',
-                                                      'license_nmb_score'))
+# Initialize EasyOCR once.
+reader = easyocr.Reader(["en"], gpu=False)
 
-        for frame_nmb in results.keys():
-            for car_id in results[frame_nmb].keys():
-                print(results[frame_nmb][car_id])
-                if 'car' in results[frame_nmb][car_id].keys() and \
-                        'plate' in results[frame_nmb][car_id].keys() and \
-                        'text' in results[frame_nmb][car_id]['plate'].keys():
-                    car_bbox = results[frame_nmb][car_id]['car']['bbox']
-                    lp = results[frame_nmb][car_id]['plate']
-                    f.write('{}, {}, {}, {}, {}, {}, {}\n'.format(frame_nmb,
-                                                                  car_id,
-                                                                  '[{} {} {} {}]'.format(
-                                                                      car_bbox[0],
-                                                                      car_bbox[1],
-                                                                      car_bbox[2],
-                                                                      car_bbox[3]),
-                                                                  '[{} {} {} {}]'.format(
-                                                                      lp['bbox'][0],
-                                                                      lp['bbox'][1],
-                                                                      lp['bbox'][2],
-                                                                      lp['bbox'][3]),
-                                                                  lp['bbox_score'],
-                                                                  lp['text'],
-                                                                  lp['text_score']
-                                                                  ))
-        f.close()
+
+def normalize_plate(text):
+    """Convert OCR output to uppercase letters and digits."""
+    if text is None:
+        return ""
+
+    if not isinstance(text, str):
+        return ""
+
+    text = text.strip().upper()
+
+    # Reject missing values and numeric placeholders.
+    if text in {"", "NONE", "NAN", "UNREADABLE", "1.0", "-1"}:
+        return ""
+
+    return re.sub(r"[^A-Z0-9]", "", text)
 
 
 def check_license_plate_format(text):
-    if len(text) != 7:
+    """
+    Check common Indian registration formats.
+
+    This checks the format only, not whether a registration is genuine.
+    """
+    text = normalize_plate(text)
+
+    if not text:
         return False
 
-    if (text[0].isupper() or text[0] in dict_int_to_char.keys()) and \
-            (text[1].isupper() or text[1] in dict_int_to_char.keys()) and \
-            (text[2].isdigit() or text[2] in dict_char_to_int.keys()) and \
-            (text[3].isdigit() or text[3] in dict_char_to_int.keys()) and \
-            (text[4].isupper() or text[4] in dict_int_to_char.keys()) and \
-            (text[5].isupper() or text[5] in dict_int_to_char.keys()) and \
-            (text[6].isupper() or text[6] in dict_int_to_char.keys()):
-        return True
+    # Examples: TN09AB1234, KL07BA5252
+    state_format = r"^[A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{1,4}$"
 
-    else:
-        return False
+    # Example: 22BH1234AA
+    bharat_format = r"^[0-9]{2}BH[0-9]{4}[A-Z]{1,2}$"
+
+    return bool(
+        re.fullmatch(state_format, text)
+        or re.fullmatch(bharat_format, text)
+    )
 
 
 def format_license_number(text):
-    license_number = ''
-
-    char_map = {0: dict_int_to_char, 1: dict_int_to_char, 4: dict_int_to_char, 5: dict_int_to_char, 6: dict_int_to_char,
-                2: dict_char_to_int, 3: dict_char_to_int}
-
-    for i in range(7):
-        if text[i] in char_map[i].keys():
-            license_number += char_map[i][text[i]]
-        else:
-            license_number += text[i]
-
-    return license_number
+    """Return normalized OCR text."""
+    return normalize_plate(text)
 
 
 def read_license_plate(img):
-    detection = reader.readtext(img)
+    """
+    Return (recognized_text, confidence).
 
-    for det in detection:
-        bbox, text, score = det
+    Return (None, 0.0) if no usable OCR text is detected.
+    """
+    if img is None or getattr(img, "size", 0) == 0:
+        return None, 0.0
 
-        text = text.upper().replace(' ', '')
+    try:
+        detections = reader.readtext(img)
+    except Exception as exc:
+        print("EasyOCR warning:", exc)
+        return None, 0.0
 
-        if check_license_plate_format(text):
-            return format_license_number(text), score
+    best_text = None
+    best_score = 0.0
 
-        return -1, -1
+    for detection in detections:
+        if not isinstance(detection, (tuple, list)) or len(detection) < 3:
+            continue
+
+        _, raw_text, raw_score = detection
+
+        if not isinstance(raw_text, str):
+            continue
+
+        text = normalize_plate(raw_text)
+        if not text:
+            continue
+
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+
+        if not 0.0 <= score <= 1.0:
+            continue
+
+        # Prefer higher confidence, with a small tie-breaker for
+        # candidates matching an Indian registration format.
+        rank = score + (
+            0.10 if check_license_plate_format(text) else 0.0
+        )
+
+        best_rank = best_score + (
+            0.10 if check_license_plate_format(best_text) else 0.0
+        ) if best_text else -1.0
+
+        if rank > best_rank:
+            best_text = text
+            best_score = score
+
+    return best_text, best_score
 
 
 def map_car(plate, tracking_ids):
-    x1, y1, x2, y2, score, class_id = plate
+    """
+    Return the tracked vehicle containing the plate.
 
-    for j in range(len(tracking_ids)):
-        x1car, y1car, x2car, y2car, car_id = tracking_ids[j]
+    Returns a five-element tuple of -1 values if no vehicle matches.
+    """
+    try:
+        if plate is None or len(plate) < 4:
+            return (-1, -1, -1, -1, -1)
 
-        if x1 > x1car and y1 > y1car and x2 < x2car and y2 < y2car:
-            car_index = j
-            return tracking_ids[car_index]
+        x1, y1, x2, y2 = plate[:4]
 
-    return -1, -1, -1, -1, -1
+        for vehicle in tracking_ids:
+            if len(vehicle) < 5:
+                continue
+
+            vx1, vy1, vx2, vy2, car_id = vehicle[:5]
+
+            if (
+                x1 >= vx1
+                and y1 >= vy1
+                and x2 <= vx2
+                and y2 <= vy2
+            ):
+                return vehicle
+
+    except (TypeError, ValueError, IndexError) as exc:
+        print("Plate-to-vehicle mapping warning:", exc)
+
+    return (-1, -1, -1, -1, -1)
