@@ -1,29 +1,15 @@
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
+# Input videos
+uploads/
 
-# Virtual environments
+# Python environment
 venv/
 .venv/
-env/
 
-# Environment variables and secrets
-.env
-.env.*
-
-# Model weights - upload separately if needed
+# Model weights
 *.pt
 *.pth
-*.onnx
 
-# Large generated outputs
+# Generated outputs
 outputs/plate_crops/
 outputs/enhanced_plates/
 outputs/*.mp4
-outputs/*.avi
-
-# Local temporary files
-*.log
-.DS_Store
-Thumbs.db
